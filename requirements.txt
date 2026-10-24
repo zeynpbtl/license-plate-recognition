@@ -1,0 +1,10 @@
+ultralytics
+opencv-python
+numpy
+pandas
+easyocr
+lap
+
+# SORT takipçisini kullanmak istersen (TAKIPCI = "sort"):
+# filterpy
+# scikit-image
