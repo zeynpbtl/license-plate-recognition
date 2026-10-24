@@ -1,93 +1,137 @@
 import csv
+from collections import defaultdict
+
 import numpy as np
-from scipy.interpolate import interp1d
+
+
+def parse_bbox(s):
+    """'x1 y1 x2 y2' (eski '[x1 y1 x2 y2]' biçimi de olur) -> 4 float."""
+    return list(map(float, s.replace('[', '').replace(']', '').replace(',', ' ').split()))
+
+
+def fmt(b):
+    return ' '.join(f'{v:.2f}' for v in b)
 
 
 def interpolate_bounding_boxes(data):
-    # Extract necessary data columns from input data
-    frame_numbers = np.array([int(row['frame_nmr']) for row in data])
-    car_ids = np.array([int(float(row['car_id'])) for row in data])
-    car_bboxes = np.array([list(map(float, row['car_bbox'][1:-1].split())) for row in data])
-    license_plate_bboxes = np.array([list(map(float, row['license_plate_bbox'][1:-1].split())) for row in data])
+    # araç -> {kare: satır} sözlüğü (satır taramak yerine doğrudan erişim)
+    por_arac = defaultdict(dict)
+    for row in data:
+        por_arac[int(float(row['car_id']))][int(row['frame_nmr'])] = row
 
     interpolated_data = []
-    unique_car_ids = np.unique(car_ids)
-    for car_id in unique_car_ids:
+    for car_id in sorted(por_arac):
+        kareler = por_arac[car_id]
+        f_list = sorted(kareler)
+        first, last = f_list[0], f_list[-1]
 
-        frame_numbers_ = [p['frame_nmr'] for p in data if int(float(p['car_id'])) == int(float(car_id))]
-        print(frame_numbers_, car_id)
+        car_pts = np.array([parse_bbox(kareler[f]['car_bbox']) for f in f_list])
+        plate_pts = np.array([parse_bbox(kareler[f]['license_plate_bbox']) for f in f_list])
 
-        # Filter data for a specific car ID
-        car_mask = car_ids == car_id
-        car_frame_numbers = frame_numbers[car_mask]
-        car_bboxes_interpolated = []
-        license_plate_bboxes_interpolated = []
+        tum_kareler = np.arange(first, last + 1)
+        # eksik karelerin kutularını doğrusal olarak doldur
+        car_i = np.column_stack([np.interp(tum_kareler, f_list, car_pts[:, k]) for k in range(4)])
+        plate_i = np.column_stack([np.interp(tum_kareler, f_list, plate_pts[:, k]) for k in range(4)])
 
-        first_frame_number = car_frame_numbers[0]
-        last_frame_number = car_frame_numbers[-1]
+        for idx, frame_number in enumerate(tum_kareler):
+            frame_number = int(frame_number)
+            row = {'frame_nmr': frame_number,
+                   'car_id': car_id,
+                   'car_bbox': fmt(car_i[idx]),
+                   'license_plate_bbox': fmt(plate_i[idx])}
 
-        for i in range(len(car_bboxes[car_mask])):
-            frame_number = car_frame_numbers[i]
-            car_bbox = car_bboxes[car_mask][i]
-            license_plate_bbox = license_plate_bboxes[car_mask][i]
-
-            if i > 0:
-                prev_frame_number = car_frame_numbers[i-1]
-                prev_car_bbox = car_bboxes_interpolated[-1]
-                prev_license_plate_bbox = license_plate_bboxes_interpolated[-1]
-
-                if frame_number - prev_frame_number > 1:
-                    # Interpolate missing frames' bounding boxes
-                    frames_gap = frame_number - prev_frame_number
-                    x = np.array([prev_frame_number, frame_number])
-                    x_new = np.linspace(prev_frame_number, frame_number, num=frames_gap, endpoint=False)
-                    interp_func = interp1d(x, np.vstack((prev_car_bbox, car_bbox)), axis=0, kind='linear')
-                    interpolated_car_bboxes = interp_func(x_new)
-                    interp_func = interp1d(x, np.vstack((prev_license_plate_bbox, license_plate_bbox)), axis=0, kind='linear')
-                    interpolated_license_plate_bboxes = interp_func(x_new)
-
-                    car_bboxes_interpolated.extend(interpolated_car_bboxes[1:])
-                    license_plate_bboxes_interpolated.extend(interpolated_license_plate_bboxes[1:])
-
-            car_bboxes_interpolated.append(car_bbox)
-            license_plate_bboxes_interpolated.append(license_plate_bbox)
-
-        for i in range(len(car_bboxes_interpolated)):
-            frame_number = first_frame_number + i
-            row = {}
-            row['frame_nmr'] = str(frame_number)
-            row['car_id'] = str(car_id)
-            row['car_bbox'] = ' '.join(map(str, car_bboxes_interpolated[i]))
-            row['license_plate_bbox'] = ' '.join(map(str, license_plate_bboxes_interpolated[i]))
-
-            if str(frame_number) not in frame_numbers_:
-                # Imputed row, set the following fields to '0'
+            orijinal = kareler.get(frame_number)
+            if orijinal is None:
+                # interpolasyonla eklenen satır
                 row['license_plate_bbox_score'] = '0'
                 row['license_number'] = '0'
                 row['license_number_score'] = '0'
             else:
-                # Original row, retrieve values from the input data if available
-                original_row = [p for p in data if int(p['frame_nmr']) == frame_number and int(float(p['car_id'])) == int(float(car_id))][0]
-                row['license_plate_bbox_score'] = original_row['license_plate_bbox_score'] if 'license_plate_bbox_score' in original_row else '0'
-                row['license_number'] = original_row['license_number'] if 'license_number' in original_row else '0'
-                row['license_number_score'] = original_row['license_number_score'] if 'license_number_score' in original_row else '0'
+                row['license_plate_bbox_score'] = orijinal['license_plate_bbox_score']
+                row['license_number'] = orijinal['license_number']
+                row['license_number_score'] = orijinal['license_number_score']
 
             interpolated_data.append(row)
 
     return interpolated_data
 
 
-# Load the CSV file
-with open('test.csv', 'r') as file:
-    reader = csv.DictReader(file)
-    data = list(reader)
+# ---------------- ID BİRLEŞTİRME AYARLARI ----------------
+MAX_BOSLUK = 30   # bir ID bittikten en fazla kaç kare sonra başlayan yeni ID devam sayılır
+MIN_IOU = 0.3     # eski ID'nin son kutusu ile yeni ID'nin ilk kutusunun en az örtüşmesi
+# ---------------------------------------------------------
 
-# Interpolate missing data
+
+def iou(a, b):
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / ua if ua > 0 else 0.0
+
+
+def idleri_birlestir(data):
+    """Takipçinin aynı araca verdiği ardışık ID'leri tek ID'ye indirir."""
+    bilgi = {}
+    for row in data:
+        cid = int(float(row['car_id']))
+        f = int(row['frame_nmr'])
+        box = parse_bbox(row['car_bbox'])
+        b = bilgi.setdefault(cid, {'ilk': f, 'son': f, 'ilk_box': box, 'son_box': box})
+        if f < b['ilk']:
+            b['ilk'], b['ilk_box'] = f, box
+        if f > b['son']:
+            b['son'], b['son_box'] = f, box
+
+    kok = {cid: cid for cid in bilgi}
+
+    def bul(c):
+        while kok[c] != c:
+            c = kok[c]
+        return c
+
+    devam_etti = set()   # her ID'nin en fazla bir halefi olur
+    for cid in sorted(bilgi, key=lambda c: bilgi[c]['ilk']):
+        b = bilgi[cid]
+        en_iyi, en_iou = None, MIN_IOU
+        for aday, a in bilgi.items():
+            if aday == cid or aday in devam_etti:
+                continue
+            bosluk = b['ilk'] - a['son']
+            if not 0 < bosluk <= MAX_BOSLUK:
+                continue
+            v = iou(a['son_box'], b['ilk_box'])
+            if v >= en_iou:
+                en_iyi, en_iou = aday, v
+        if en_iyi is not None:
+            kok[cid] = bul(en_iyi)
+            devam_etti.add(en_iyi)
+            print(f"ID {cid} -> ID {bul(en_iyi)} ile birleştirildi (IoU {en_iou:.2f})")
+
+    # yeniden etiketle; aynı karede çakışma olursa okuma skoru yüksek olan kalsın
+    secilen = {}
+    for row in data:
+        row['car_id'] = str(bul(int(float(row['car_id']))))
+        anahtar = (row['car_id'], int(row['frame_nmr']))
+        eski = secilen.get(anahtar)
+        if eski is None or float(row['license_number_score']) > float(eski['license_number_score']):
+            secilen[anahtar] = row
+    return list(secilen.values())
+
+
+# CSV'yi oku
+with open('test.csv', 'r') as file:
+    data = list(csv.DictReader(file))
+
+data = idleri_birlestir(data)
+
 interpolated_data = interpolate_bounding_boxes(data)
 
-# Write updated data to a new CSV file
-header = ['frame_nmr', 'car_id', 'car_bbox', 'license_plate_bbox', 'license_plate_bbox_score', 'license_number', 'license_number_score']
+header = ['frame_nmr', 'car_id', 'car_bbox', 'license_plate_bbox',
+          'license_plate_bbox_score', 'license_number', 'license_number_score']
 with open('test_interpolated.csv', 'w', newline='') as file:
     writer = csv.DictWriter(file, fieldnames=header)
     writer.writeheader()
     writer.writerows(interpolated_data)
+
+print("test_interpolated.csv yazıldı")
