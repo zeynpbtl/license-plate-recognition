@@ -113,6 +113,3 @@ Plakalar kişisel veri sayılabilir. Repoya video ve model dosyaları eklenmemi�
 - [OpenCV](https://opencv.org/), NumPy, pandas
 - (İsteğe bağlı) [SORT](https://github.com/abewley/sort)
 
-## Lisans
-
-Ultralytics AGPL-3.0 lisanslı olduğu için bu projeyi de AGPL-3.0 altında yayınlamak en güvenli seçenektir. Detay için `LICENSE` dosyasına bak.
